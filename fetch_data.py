@@ -30,7 +30,7 @@ BACKTEST_LOOKBACK_DAYS = 21
 HISTORY_LOOKBACK_DAYS = 60
 HISTORY_MAX_ROWS = 2500
 RECOMMENDATION_LOG_MAX_ROWS = 5000
-MAX_PREDICTION_AGE_HOURS = 21 * 24
+MAX_PREDICTION_AGE_HOURS = 7 * 24
 SIGNAL_AUDIT_MAX_ROWS = 24
 
 MARKETS = [
@@ -725,6 +725,44 @@ def is_prediction_stale(row, now_utc=None, max_age_hours=MAX_PREDICTION_AGE_HOUR
     return age_h > max_age_hours
 
 
+def prediction_age_hours(row, now_utc=None):
+    now_utc = now_utc or datetime.now(timezone.utc)
+    created_at = parse_dt((row or {}).get("created_at"))
+    if not created_at:
+        return None
+    return (now_utc - created_at.astimezone(timezone.utc)).total_seconds() / 3600.0
+
+
+def freshness_multiplier_by_age(age_hours):
+    if age_hours is None:
+        return 1.0
+    if age_hours <= 48:
+        return 1.0
+    if age_hours <= 72:
+        return 0.99
+    if age_hours <= 96:
+        return 0.975
+    if age_hours <= 120:
+        return 0.96
+    if age_hours <= 144:
+        return 0.94
+    return 0.90
+
+
+def freshness_bucket(age_hours):
+    if age_hours is None:
+        return "unknown"
+    if age_hours <= 48:
+        return "fresh"
+    if age_hours <= 72:
+        return "valid"
+    if age_hours <= 96:
+        return "aging"
+    if age_hours <= 144:
+        return "stale"
+    return "critical"
+
+
 def dedupe_and_filter_predictions(predictions, now_utc=None, max_age_hours=MAX_PREDICTION_AGE_HOURS):
     now_utc = now_utc or datetime.now(timezone.utc)
     kept = {}
@@ -1239,6 +1277,15 @@ def ui_like_market_fit_score(row, market_key):
             score -= 14
         if row.get("over_25_recommend"):
             score += 10
+    elif market_key == "under25":
+        if pct(100 - pct(row.get("prob_over_25"))) >= 56:
+            score += 12
+        if xg_total <= 2.55:
+            score += 11
+        if scoreline and scoreline["total"] <= 2:
+            score += 12
+        if scoreline and scoreline["total"] > 2:
+            score -= 14
     elif market_key == "under35":
         if pct(100 - pct(row.get("prob_over_35"))) >= 68:
             score += 13
@@ -1259,6 +1306,24 @@ def ui_like_market_fit_score(row, market_key):
             score -= 16
         if row.get("btts_recommend"):
             score += 10
+    elif market_key == "homeWin":
+        if row.get("predicted_result") == "H":
+            score += 12
+        if row.get("favorite") == "H":
+            score += 10
+        if (xg_home - xg_away) >= 0.30:
+            score += 12
+        if scoreline and scoreline["home"] > scoreline["away"]:
+            score += 10
+    elif market_key == "awayWin":
+        if row.get("predicted_result") == "A":
+            score += 12
+        if row.get("favorite") == "A":
+            score += 10
+        if (xg_away - xg_home) >= 0.30:
+            score += 12
+        if scoreline and scoreline["away"] > scoreline["home"]:
+            score += 10
 
     return round(score, 2)
 
@@ -1276,8 +1341,15 @@ def build_ui_live_candidate(row, market_key):
     if hard_contradiction(row, market_key):
         return None
 
+    age_hours = prediction_age_hours(row)
+    if age_hours is not None and age_hours > MAX_PREDICTION_AGE_HOURS:
+        return None
+
     prob = market["prob"](row)
     confidence = normalize_confidence(row.get("confidence") if row.get("confidence") is not None else row.get("favorite_prob"))
+    if confidence < 45:
+        return None
+
     league_name = (event.get("league") or {}).get("name") or "Unknown"
     tier_info = get_league_tier_info(league_name)
     value = calc_value(prob, odds)
@@ -1287,12 +1359,28 @@ def build_ui_live_candidate(row, market_key):
         return None
 
     adj = adjusted_prob(prob, confidence, league_name=league_name, market_key=market_key, odds=odds)
+    adj *= freshness_multiplier_by_age(age_hours)
+    adj = round(adj, 2)
+    if adj < 64:
+        return None
+
     market_prob = market_prob_from_row_event(row, event, market_key)
     edge_pct = round(prob - market_prob, 2) if market_prob is not None else None
+    if edge_pct is not None and edge_pct < 0:
+        return None
+
     fit = ui_like_market_fit_score(row, market_key)
     source_api = api_recommend(row, market_key)
     source_heuristic = ui_like_heuristic_recommend(row, market_key)
     conf_boost = min(6.0, confidence * 0.06)
+    freshness_penalty = 0.0 if age_hours is None else (
+        0.0 if age_hours <= 48 else
+        2.0 if age_hours <= 72 else
+        4.0 if age_hours <= 96 else
+        7.0 if age_hours <= 120 else
+        10.0 if age_hours <= 144 else
+        14.0
+    )
 
     ticket_score = 0.0
     ticket_score += adj * 0.40
@@ -1300,6 +1388,7 @@ def build_ui_live_candidate(row, market_key):
     ticket_score += max(0.0, value) * 100.0 * 0.18
     ticket_score += fit
     ticket_score += conf_boost
+    ticket_score -= freshness_penalty
     if source_api:
         ticket_score += 4.0
     if source_heuristic:
@@ -1330,6 +1419,8 @@ def build_ui_live_candidate(row, market_key):
         "prediction_id": row.get("id"),
         "date": event.get("event_date"),
         "created_at": row.get("created_at"),
+        "age_hours": round(age_hours, 2) if age_hours is not None else None,
+        "freshness_bucket": freshness_bucket(age_hours),
         "most_likely_score": row.get("most_likely_score"),
     }
 
@@ -1337,7 +1428,7 @@ def build_ui_live_candidate(row, market_key):
 
 def build_current_recommendation_rows(predictions, logged_at_iso):
     rows = []
-    tracked_market_keys = ["over15", "over25", "under35", "btts"]
+    tracked_market_keys = ["over15", "over25", "under25", "under35", "btts", "homeWin", "awayWin"]
 
     for row in predictions or []:
         event = row.get("event") or {}
