@@ -28,6 +28,7 @@ STATIC_REFRESH_HOURS = {0, 6, 12, 18}  # UTC
 LOOKAHEAD_DAYS = 30
 BACKTEST_LOOKBACK_DAYS = 21
 HISTORY_LOOKBACK_DAYS = 60
+FINISHED_EVENTS_LOOKBACK_DAYS = max(HISTORY_LOOKBACK_DAYS, BACKTEST_LOOKBACK_DAYS)
 HISTORY_MAX_ROWS = 2500
 RECOMMENDATION_LOG_MAX_ROWS = 5000
 MAX_PREDICTION_AGE_HOURS = 21 * 24
@@ -1291,6 +1292,29 @@ def build_finished_event_index(predictions):
     return out
 
 
+def build_finished_event_index_from_events(events):
+    out = {}
+    for event in events or []:
+        event_id = event.get("id")
+        if not event_id:
+            continue
+        if event.get("status") != "finished":
+            continue
+        if event.get("home_score") is None or event.get("away_score") is None:
+            continue
+        out[event_id] = event
+    return out
+
+
+def merge_event_indexes(*indexes):
+    out = {}
+    for index in indexes:
+        if not isinstance(index, dict):
+            continue
+        out.update(index)
+    return out
+
+
 
 def update_recommendation_log(existing_rows, current_rows, finished_events, settled_at_iso):
     existing_rows = existing_rows or []
@@ -1742,8 +1766,9 @@ def main():
     future = (started_at + timedelta(days=LOOKAHEAD_DAYS)).strftime("%Y-%m-%d")
     past = (started_at - timedelta(days=BACKTEST_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     past_history = (started_at - timedelta(days=HISTORY_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    past_finished = (started_at - timedelta(days=FINISHED_EVENTS_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
 
-    print(f"\n[1/5] Fetching predictions (next {LOOKAHEAD_DAYS} days)...")
+    print(f"\n[1/7] Fetching predictions (next {LOOKAHEAD_DAYS} days)...")
     predictions = fetch_all_pages(f"/api/predictions/?tz={TZ}&date_from={today}&date_to={future}")
     print(f"Total predictions raw: {len(predictions)}")
     predictions, upcoming_prep = dedupe_and_filter_predictions(predictions, now_utc=started_at, max_age_hours=MAX_PREDICTION_AGE_HOURS)
@@ -1751,16 +1776,20 @@ def main():
     if not predictions:
         raise RuntimeError("Predictions a venit gol dupa filtrarea stale/duplicate. Oprim workflow-ul.")
 
-    print(f"\n[2/6] Fetching upcoming events (next {LOOKAHEAD_DAYS} days)...")
+    print(f"\n[2/7] Fetching upcoming events (next {LOOKAHEAD_DAYS} days)...")
     events = fetch_all_pages(f"/api/events/?tz={TZ}&date_from={today}&date_to={future}&status=notstarted")
     print(f"Total events: {len(events)}")
 
-    print("\n[3/6] Fetching BSD status metrics...")
+    print(f"\n[3/7] Fetching finished events (last {FINISHED_EVENTS_LOOKBACK_DAYS} days)...")
+    finished_events = fetch_all_pages(f"/api/events/?tz={TZ}&date_from={past_finished}&date_to={today}&status=finished")
+    print(f"Finished events: {len(finished_events)}")
+
+    print("\n[4/7] Fetching BSD status metrics...")
     status_metrics = fetch_status_metrics()
     if status_metrics:
         print(f"Status ML predictions: {status_metrics.get('ml_predictions_upcoming')} | With odds: {status_metrics.get('with_odds')}")
 
-    print(f"\n[4/6] Building historical audit (last {BACKTEST_LOOKBACK_DAYS} days)...")
+    print(f"\n[5/7] Building historical audit (last {BACKTEST_LOOKBACK_DAYS} days)...")
     historical_predictions = fetch_all_pages(f"/api/predictions/?tz={TZ}&date_from={past}&date_to={today}")
     historical_predictions, historical_prep = dedupe_and_filter_predictions(historical_predictions, now_utc=started_at, max_age_hours=MAX_PREDICTION_AGE_HOURS)
     backtest = build_backtest_summary(historical_predictions, BACKTEST_LOOKBACK_DAYS)
@@ -1774,14 +1803,16 @@ def main():
     signal_audit = build_signal_audit(predictions)
     recommendation_log = load_existing_json("recommendation_log.json", [])
     current_recommendations = build_current_recommendation_rows(predictions, started_at.isoformat())
-    finished_events = build_finished_event_index(history_predictions)
-    recommendation_log = update_recommendation_log(recommendation_log, current_recommendations, finished_events, datetime.now(timezone.utc).isoformat())
+    finished_events_from_predictions = build_finished_event_index(history_predictions)
+    finished_events_from_endpoint = build_finished_event_index_from_events(finished_events)
+    finished_event_index = merge_event_indexes(finished_events_from_predictions, finished_events_from_endpoint)
+    recommendation_log = update_recommendation_log(recommendation_log, current_recommendations, finished_event_index, datetime.now(timezone.utc).isoformat())
     ai_memory = build_ai_memory(current_recommendations, recommendation_log, history_rows, started_at)
     data_health = build_data_health(predictions, upcoming_prep)
     header_sync = build_header_sync_metrics(predictions)
 
     refresh_static = should_refresh_static(started_at)
-    print(f"\n[5/6] Static refresh window: {'YES' if refresh_static else 'NO'}")
+    print(f"\n[6/7] Static refresh window: {'YES' if refresh_static else 'NO'}")
 
     if refresh_static or not os.path.exists(os.path.join(DATA_DIR, "leagues.json")):
         leagues = fetch_all_pages("/api/leagues/")
@@ -1796,9 +1827,10 @@ def main():
     players_focus = []
     print(f"Leagues: {len(leagues)} | Teams: {len(teams)} | Players focus: 0")
 
-    print("\n[6/6] Saving files...")
+    print("\n[7/7] Saving files...")
     save_json(predictions, "predictions.json")
     save_json(events, "events.json")
+    save_json(finished_events, "finished_events.json")
     save_json(leagues, "leagues.json")
     save_json(teams, "teams.json")
     save_json(players_focus, "players_focus.json")
@@ -1814,6 +1846,7 @@ def main():
         "predictions_count": len(predictions),
         "raw_predictions_count": upcoming_prep.get("input_count", len(predictions)),
         "events_count": len(events),
+        "finished_events_count": len(finished_events),
         "leagues_count": len(leagues),
         "teams_count": len(teams),
         "players_focus_count": 0,
@@ -1830,6 +1863,7 @@ def main():
         "version": "v16-audit-engine-nolive-noo35",
         "timezone": TZ,
         "source": "bsd_api_light",
+        "historical_source": "bzzoiro_events_finished",
         "refresh_static": refresh_static,
         "lookahead_days": LOOKAHEAD_DAYS,
         "backtest_lookback_days": BACKTEST_LOOKBACK_DAYS,
