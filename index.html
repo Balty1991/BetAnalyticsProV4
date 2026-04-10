@@ -1530,21 +1530,19 @@ function sourceLabelFromBet(b){
   var t = sourceTypeFromBet(b);
   if(t === 'api') return 'Model API';
   if(t === 'mixed') return 'Model + reguli';
-  if(t === 'heuristic') return 'Model intern';
+  if(t === 'heuristic') return 'Scoring intern';
   return '—';
 }
 function sourceChipHtmlForBet(b){
   var t = sourceTypeFromBet(b);
   if(t === 'api') return '<span class="source-chip source-chip-api">Model API</span>';
   if(t === 'mixed') return '<span class="source-chip source-chip-mixed">Model + reguli</span>';
-  if(t === 'heuristic') return '<span class="source-chip source-chip-heur">Model intern</span>';
   return '';
 }
 function sourceChipHtmlForAuditRow(r){
   if(r && r.source_api && r.source_heuristic) return '<span class="source-chip source-chip-mixed">Model + reguli</span>';
   if(r && r.source_api) return '<span class="source-chip source-chip-api">Model API</span>';
-  if(r && r.source_heuristic) return '<span class="source-chip source-chip-heur">Model intern</span>';
-  return '<span class="source-chip source-chip-heur">Model intern</span>';
+  return '';
 }
 function ageBucketLabel(hours){
   var h = Number(hours || 0);
@@ -3890,7 +3888,7 @@ function renderMatches(){
     var legendHtml = (
       '<div class="match-stat-legend">'+
         '<div class="match-stat-item"><strong>Bază statistică</strong>xG gazde '+m.xgHome.toFixed(2)+' • xG oaspeți '+m.xgAway.toFixed(2)+' • xG total '+m.xgTotal.toFixed(2)+'</div>'+
-        '<div class="match-stat-item"><strong>Context semnal</strong>'+(m.mostLikelyScore ? ('Scor probabil '+m.mostLikelyScore+' • ') : '')+(m.leagueTierLabel || 'Ligă neutră')+' • '+sourceLabelFromBet(b)+'</div>'+
+        '<div class="match-stat-item"><strong>Context analiză</strong>'+(m.mostLikelyScore ? ('Scor probabil '+m.mostLikelyScore+' • ') : '')+(m.leagueTierLabel || 'Ligă neutră')+' • '+sourceLabelFromBet(b)+'</div>'+
       '</div>'
     );
     return '<div class="match-card '+verdictClass+'">'+
