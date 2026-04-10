@@ -1444,6 +1444,9 @@ body{background:var(--bg);color:var(--txt);font-family:'Inter',sans-serif;min-he
 var ALL_MATCHES = [];
 var ALL_LEAGUES = [];
 var ALL_EVENTS = [];
+var ALL_FINISHED_EVENTS = [];
+var FINISHED_EVENT_ARCHIVE = JSON.parse(localStorage.getItem('bet_finished_events_archive') || '{}');
+var OWN_HISTORY_ARCHIVE = JSON.parse(localStorage.getItem('bet_reco_history_archive') || '{}');
 var ALL_TEAMS = [];
 var ALL_PLAYERS = [];
 var BACKTEST_SUMMARY = {};
@@ -1455,6 +1458,7 @@ var AI_MEMORY_TICKETS = {safe:null, balanced:null, risk:null};
 var AUDIT_TICKETS = {safe:null, balanced:null, risk:null};
 var ACTIVE_HISTORY_MARKET = '';
 var APP_META = {};
+var PREDICTION_HISTORY_MODEL = { updatedAt:null, lookbackDays:90, rows:0, byMarket:{}, byMarketLeague:{}, byMarketOdds:{}, byMarketConf:{} };
 var BILETE = null;
 var CURRENT_FILTER = 'all';
 var TRACKING = JSON.parse(localStorage.getItem('bet_tracking') || '[]');
@@ -2313,6 +2317,7 @@ function doRefresh(){
     getJson('/data/meta.json', {}),
     getJson('/data/leagues.json', []),
     getJson('/data/events.json', []),
+    getJson('/data/finished_events.json', []),
     getJson('/data/teams.json', []),
     getJson('/data/backtest.json', {}),
     getJson('/data/history_engine.json', []),
@@ -2324,12 +2329,13 @@ function doRefresh(){
     var meta = results[1];
     var leaguesData = results[2];
     var eventsData = results[3];
-    var teamsData = results[4];
-    var backtestData = results[5];
-    var historyData = results[6];
-    var recommendationLogData = results[7];
-    var signalAuditData = results[8];
-    var aiMemoryData = results[9];
+    var finishedEventsData = results[4];
+    var teamsData = results[5];
+    var backtestData = results[6];
+    var historyData = results[7];
+    var recommendationLogData = results[8];
+    var signalAuditData = results[9];
+    var aiMemoryData = results[10];
 
     var preds = predData.results || predData || [];
     APP_META = meta || {};
@@ -2337,6 +2343,8 @@ function doRefresh(){
     syncRecommendationEngine();
     ALL_LEAGUES = leaguesData.results || leaguesData || [];
     ALL_EVENTS = eventsData.results || eventsData || [];
+    ALL_FINISHED_EVENTS = finishedEventsData.results || finishedEventsData || [];
+    mergeFinishedEventsIntoArchive(ALL_FINISHED_EVENTS);
     ALL_TEAMS = teamsData.results || teamsData || [];
     ALL_PLAYERS = [];
     BACKTEST_SUMMARY = backtestData || {};
@@ -2345,6 +2353,8 @@ function doRefresh(){
     SIGNAL_AUDIT = signalAuditData || {};
     AI_MEMORY = aiMemoryData || {};
     BILETE = null;
+    syncOwnHistoryArchive();
+    refreshPredictionHistoryModel();
 
     var storedToken = localStorage.getItem('bsd_token');
     if(storedToken) API_TOKEN = storedToken;
@@ -3781,6 +3791,7 @@ function renderMatches(){
     var valueBadge = b && b.value != null ? ('<span class="card-reco-badge">Value '+((b.value>=0?'+':'') + fmtPct((b.value||0)*100))+'</span>') : '';
     var edgeBadge = b && b.edgePct != null ? ('<span class="card-reco-badge">Edge '+(b.edgePct >= 0 ? '+' : '')+fmtPct(b.edgePct)+'</span>') : '';
     var confBadge = b ? ('<span class="card-reco-badge">Confidence '+m.confidence.toFixed(0)+'%</span>') : '';
+    var historyBadge = b ? ('<span class="card-reco-badge">Istoric '+(b.historyAdjLabel || 'neutru')+'</span>') : '';
     var scoreBadge = m.mostLikelyScore ? ('<span class="mc-score-pill">scor probabil '+m.mostLikelyScore+'</span>') : '';
     var sourceBadge = b ? sourceChipHtmlForBet(b) : '';
     var ageBadge = m.createdAt ? ('<span class="card-reco-badge">Vârstă '+ageBucketLabel(hoursSince(m.createdAt))+'</span>') : '';
@@ -3810,7 +3821,7 @@ function renderMatches(){
           (recOdd ? '<div class="card-reco-odd">@ '+recOdd+'</div>' : '')+
         '</div>'+
         '<div class="card-reco-pick">'+recLabel+'</div>'+
-        '<div class="card-reco-badges">'+probBadge+edgeBadge+valueBadge+confBadge+ageBadge+'</div>'+
+        '<div class="card-reco-badges">'+probBadge+edgeBadge+valueBadge+confBadge+historyBadge+ageBadge+'</div>'+
       '</div>'+
       (reasons ? '<div class="reason-list">'+reasons+'</div>' : '')+
     '</div>';
@@ -3989,27 +4000,37 @@ function buildMarketCandidate(m, type){
   if(Number(b.odds || 0) > 1.65) return null;
 
   var fit = marketFitAnalysis(m, type);
-  var reasons = uniqueReasons((fit && fit.reasons) || []);
+  var historyBoost = getPredictionHistoryBoost(type, m.league, b.odds, m.confidence || 0);
+  var boostedAdjProb = +clamp(Number(b.adjProb || 0) + Number(historyBoost.adjBoost || 0), 0, 99.9).toFixed(2);
+  var reasons = uniqueReasons(((fit && fit.reasons) || []).concat(historyBoost.reasons || []));
   var edgePct = Number(b.edgePct || 0);
   var confBoost = Math.min(6, (m.confidence || 0) * 0.06);
 
   var baseScore = 0;
-  baseScore += (b.adjProb * 0.40);
+  baseScore += (boostedAdjProb * 0.40);
   baseScore += (Math.max(0, edgePct) * 1.35);
   baseScore += (Math.max(0, b.value) * 100 * 0.18);
   baseScore += (fit && fit.score) || 0;
   baseScore += confBoost;
+  baseScore += Number(historyBoost.scoreBoost || 0);
   if(b.sourceApi) baseScore += 4;
   if(b.sourceHeuristic) baseScore += 2;
   if(b.odds >= 1.18 && b.odds <= 1.75) baseScore += 4;
   if(b.odds > 2.20) baseScore -= 8;
 
   var risk = 'MEDIU';
-  if(b.adjProb >= 76 && edgePct >= 2 && (m.confidence || 0) >= 56) risk = 'LOW';
-  else if(b.adjProb < 58 || b.odds > 2.10 || edgePct < 1) risk = 'HIGH';
+  if(boostedAdjProb >= 76 && edgePct >= 2 && (m.confidence || 0) >= 56) risk = 'LOW';
+  else if(boostedAdjProb < 58 || b.odds > 2.10 || edgePct < 1) risk = 'HIGH';
 
   return Object.assign({}, m, {
-    bestBet: Object.assign({}, b),
+    bestBet: Object.assign({}, b, {
+      rawAdjProb: Number(b.adjProb || 0),
+      adjProb: boostedAdjProb,
+      historyScoreBoost: Number(historyBoost.scoreBoost || 0),
+      historyAdjBoost: Number(historyBoost.adjBoost || 0),
+      historyAdjLabel: historyBoost.label || 'neutru',
+      historyStrength: historyBoost.strength || 'neutral'
+    }),
     ticketScore: Math.round(baseScore),
     ticketRisk: risk,
     why: reasons.slice(0, 3).join(' • ')
@@ -5705,6 +5726,362 @@ function getEventDateMs(obj){
   return isFinite(ms) ? ms : null;
 }
 
+function safeLocalStorageJsonSet(key, value){
+  try{
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  }catch(err){
+    console.warn('localStorage write failed for', key, err);
+    return false;
+  }
+}
+
+function compactFinishedEventForStorage(ev){
+  if(!ev || ev.id == null) return null;
+  var score = getScorePairFromSource(ev);
+  return {
+    id: ev.id,
+    event_date: ev.event_date || ev.date || null,
+    status: ev.status || 'finished',
+    period: ev.period || null,
+    home_team: ev.home_team || ev.home || null,
+    away_team: ev.away_team || ev.away || null,
+    league_name: (ev.league && ev.league.name) ? ev.league.name : (ev.league_name || null),
+    home_score: score.homeScore,
+    away_score: score.awayScore,
+    archived_at: (ev.archived_at || new Date().toISOString())
+  };
+}
+
+function getFinishedEventArchiveList(){
+  return Object.keys(FINISHED_EVENT_ARCHIVE || {}).map(function(key){ return FINISHED_EVENT_ARCHIVE[key]; });
+}
+
+function trimArchiveObjectByDate(obj, limit){
+  var entries = Object.keys(obj || {}).map(function(key){ return {key:key, row:obj[key]}; });
+  if(entries.length <= limit) return obj || {};
+  entries.sort(function(a, b){
+    return new Date(b.row && (b.row.event_date || b.row.logged_at || b.row.settled_at || 0)).getTime() - new Date(a.row && (a.row.event_date || a.row.logged_at || a.row.settled_at || 0)).getTime();
+  });
+  var next = {};
+  entries.slice(0, limit).forEach(function(entry){
+    next[entry.key] = entry.row;
+  });
+  return next;
+}
+
+function mergeFinishedEventsIntoArchive(events){
+  var changed = false;
+  (events || []).forEach(function(ev){
+    var compact = compactFinishedEventForStorage(ev);
+    if(!compact) return;
+    var key = String(compact.id);
+    var prev = FINISHED_EVENT_ARCHIVE[key];
+    if(prev && prev.archived_at && !compact.archived_at) compact.archived_at = prev.archived_at;
+    var prevComparable = prev ? JSON.stringify(Object.assign({}, prev, { archived_at: null })) : null;
+    var nextComparable = JSON.stringify(Object.assign({}, compact, { archived_at: null }));
+    if(prevComparable !== nextComparable){
+      if(prev && prev.archived_at) compact.archived_at = prev.archived_at;
+      FINISHED_EVENT_ARCHIVE[key] = compact;
+      changed = true;
+    }
+  });
+  var trimmed = trimArchiveObjectByDate(FINISHED_EVENT_ARCHIVE, 2500);
+  if(Object.keys(trimmed).length !== Object.keys(FINISHED_EVENT_ARCHIVE).length){
+    FINISHED_EVENT_ARCHIVE = trimmed;
+    changed = true;
+  }
+  if(changed) safeLocalStorageJsonSet('bet_finished_events_archive', FINISHED_EVENT_ARCHIVE);
+  return changed;
+}
+
+function getKnownEventPool(){
+  var out = {};
+  function add(ev){
+    if(!ev) return;
+    var key = ev.id != null ? ('id:' + String(ev.id)) : ('fallback:' + [normalizeTicketEntityName(ev.home_team || ev.home || ''), normalizeTicketEntityName(ev.away_team || ev.away || ''), String(ev.event_date || ev.date || '')].join('::'));
+    var prev = out[key];
+    if(!prev){
+      out[key] = ev;
+      return;
+    }
+    var prevFinished = isFinishedEventStatus(prev.status, prev.period);
+    var nextFinished = isFinishedEventStatus(ev.status, ev.period);
+    if(nextFinished && !prevFinished){
+      out[key] = ev;
+      return;
+    }
+    var prevScore = getScorePairFromSource(prev);
+    var nextScore = getScorePairFromSource(ev);
+    if((prevScore.homeScore == null || prevScore.awayScore == null) && (nextScore.homeScore != null && nextScore.awayScore != null)) out[key] = ev;
+  }
+  (ALL_EVENTS || []).forEach(add);
+  (ALL_FINISHED_EVENTS || []).forEach(add);
+  getFinishedEventArchiveList().forEach(add);
+  return Object.keys(out).map(function(key){ return out[key]; });
+}
+
+function findFinishedEventForRow(row){
+  if(!row) return null;
+  var pick = {
+    eventId: row.event_id != null ? row.event_id : (row.eventId != null ? row.eventId : null),
+    eventDate: row.event_date || row.date || null,
+    home: row.home || null,
+    away: row.away || null
+  };
+  var best = null;
+  var bestScore = -Infinity;
+  getKnownEventPool().forEach(function(ev){
+    if(!ev || !isFinishedEventStatus(ev.status, ev.period)) return;
+    var sc = scoreEventCandidate(ev, pick);
+    if(sc > bestScore){
+      bestScore = sc;
+      best = ev;
+    }
+  });
+  return bestScore >= 120 ? best : null;
+}
+
+function getHistory21StatusBasic(row){
+  var raw = String(row && row.status || '').toLowerCase();
+  if(raw === 'win') return 'win';
+  if(raw === 'lose' || raw === 'loss') return 'lose';
+  if(row && row.won === true) return 'win';
+  if(row && row.won === false) return 'lose';
+  var marketType = row ? (row.market_key || inferMarketTypeFromLabel(row.market || '')) : null;
+  if(row && row.home_score != null && row.away_score != null && marketType){
+    var evalStatus = evaluateMarketOutcome(marketType, Number(row.home_score), Number(row.away_score));
+    if(evalStatus === 'win') return 'win';
+    if(evalStatus === 'loss') return 'lose';
+  }
+  return 'pending';
+}
+
+function getEffectiveRecommendationRow(row){
+  if(!row) return null;
+  var out = Object.assign({}, row);
+  out.market_key = out.market_key || inferMarketTypeFromLabel(out.market || '');
+  var basicStatus = getHistory21StatusBasic(out);
+  if(basicStatus !== 'pending') return out;
+  var ev = findFinishedEventForRow(out);
+  if(!ev) return out;
+  var score = getScorePairFromSource(ev);
+  out.event_id = out.event_id != null ? out.event_id : (ev.id != null ? ev.id : null);
+  out.event_date = out.event_date || out.date || ev.event_date || null;
+  out.date = out.date || out.event_date || ev.event_date || null;
+  out.home = out.home || ev.home_team || ev.home || null;
+  out.away = out.away || ev.away_team || ev.away || null;
+  out.league = out.league || ((ev.league && ev.league.name) ? ev.league.name : (ev.league_name || null));
+  out.home_score = score.homeScore;
+  out.away_score = score.awayScore;
+  var effective = getHistory21StatusBasic(out);
+  if(effective === 'win'){
+    out.status = 'win';
+    out.won = true;
+  }else if(effective === 'lose'){
+    out.status = 'lose';
+    out.won = false;
+  }
+  if(!out.settled_at) out.settled_at = ev.archived_at || new Date().toISOString();
+  out.settlement_source = 'finished_events';
+  return out;
+}
+
+function compactOwnHistoryRow(row){
+  var resolved = getEffectiveRecommendationRow(row);
+  var status = getHistory21StatusBasic(resolved);
+  if(status === 'pending') return null;
+  return {
+    source: 'archive',
+    status: status,
+    won: status === 'win',
+    event_id: resolved.event_id != null ? resolved.event_id : (resolved.eventId != null ? resolved.eventId : null),
+    prediction_id: resolved.prediction_id != null ? resolved.prediction_id : null,
+    home: resolved.home || null,
+    away: resolved.away || null,
+    league: resolved.league || null,
+    event_date: resolved.event_date || resolved.date || null,
+    date: resolved.date || resolved.event_date || null,
+    market: resolved.market || '—',
+    market_key: resolved.market_key || inferMarketTypeFromLabel(resolved.market || ''),
+    odds: Number(resolved.odds || 0),
+    adjusted_prob: Number(resolved.adjusted_prob || 0),
+    edge_pct: Number(resolved.edge_pct || 0),
+    confidence: Number(resolved.confidence || 0),
+    value: Number(resolved.value || 0),
+    score: Number(resolved.score || 0),
+    source_api: !!resolved.source_api,
+    source_heuristic: !!resolved.source_heuristic,
+    logged_at: resolved.logged_at || null,
+    prediction_created_at: resolved.prediction_created_at || resolved.created_at || null,
+    home_score: resolved.home_score != null ? Number(resolved.home_score) : null,
+    away_score: resolved.away_score != null ? Number(resolved.away_score) : null,
+    settled_at: resolved.settled_at || new Date().toISOString()
+  };
+}
+
+function syncOwnHistoryArchive(){
+  var changed = false;
+  (RECOMMENDATION_LOG || []).forEach(function(row){
+    var compact = compactOwnHistoryRow(row);
+    if(!compact) return;
+    var key = getHistory21RowKey(compact);
+    var prev = OWN_HISTORY_ARCHIVE[key];
+    if(JSON.stringify(prev || null) !== JSON.stringify(compact)){
+      OWN_HISTORY_ARCHIVE[key] = compact;
+      changed = true;
+    }
+  });
+  var trimmed = trimArchiveObjectByDate(OWN_HISTORY_ARCHIVE, 5000);
+  if(Object.keys(trimmed).length !== Object.keys(OWN_HISTORY_ARCHIVE).length){
+    OWN_HISTORY_ARCHIVE = trimmed;
+    changed = true;
+  }
+  if(changed) safeLocalStorageJsonSet('bet_reco_history_archive', OWN_HISTORY_ARCHIVE);
+  return changed;
+}
+
+function getUnifiedRealHistoryRows(days){
+  var cutoffMs = Date.now() - (Number(days || 21) * 86400000);
+  var out = {};
+
+  function addRow(row, source){
+    if(!row) return;
+    var hydrated = source === 'archive' ? Object.assign({}, row) : getEffectiveRecommendationRow(row);
+    hydrated.source = source || hydrated.source || 'log';
+    hydrated.market_key = hydrated.market_key || inferMarketTypeFromLabel(hydrated.market || '');
+    hydrated.event_id = hydrated.event_id != null ? hydrated.event_id : (hydrated.eventId != null ? hydrated.eventId : null);
+    hydrated.status = getHistory21Status(hydrated);
+    var ts = new Date(hydrated.logged_at || hydrated.prediction_created_at || hydrated.event_date || hydrated.date || 0).getTime();
+    if(!isFinite(ts) || ts < cutoffMs) return;
+    var key = getHistory21RowKey(hydrated);
+    var prev = out[key];
+    var rank = (hydrated.status === 'win' || hydrated.status === 'lose') ? 3 : 1;
+    var prevRank = prev ? ((prev.status === 'win' || prev.status === 'lose') ? 3 : 1) : -1;
+    if(!prev || rank > prevRank || ts > prev._ts) out[key] = Object.assign({_ts: ts}, hydrated);
+  }
+
+  Object.keys(OWN_HISTORY_ARCHIVE || {}).forEach(function(key){ addRow(OWN_HISTORY_ARCHIVE[key], 'archive'); });
+  (RECOMMENDATION_LOG || []).forEach(function(row){ addRow(row, 'log'); });
+
+  return Object.keys(out).map(function(key){
+    var row = Object.assign({}, out[key]);
+    delete row._ts;
+    return row;
+  });
+}
+
+function historyOddsBucket(odds){
+  var o = Number(odds || 0);
+  if(o <= 1.25) return '1.10-1.25';
+  if(o <= 1.45) return '1.26-1.45';
+  if(o <= 1.65) return '1.46-1.65';
+  return '1.66+';
+}
+
+function historyConfBucket(conf){
+  var c = Number(conf || 0);
+  if(c < 50) return '<50';
+  if(c < 60) return '50-59';
+  if(c < 70) return '60-69';
+  return '70+';
+}
+
+function createHistoryStat(){
+  return { bets:0, wins:0, profit:0, roi:0, winrate:0, score:0 };
+}
+
+function finalizeHistoryStat(stat){
+  if(!stat || !stat.bets) return createHistoryStat();
+  stat.winrate = stat.bets ? +(stat.wins * 100 / stat.bets).toFixed(2) : 0;
+  stat.roi = stat.bets ? +(stat.profit * 100 / stat.bets).toFixed(2) : 0;
+  var sampleFactor = Math.min(1, stat.bets / 10);
+  var score = ((stat.roi * 0.18) + ((stat.winrate - 54) * 0.12)) * sampleFactor;
+  stat.score = +clamp(score, -8, 8).toFixed(2);
+  return stat;
+}
+
+function bumpHistoryStat(store, key, won, odds){
+  if(!key) return;
+  if(!store[key]) store[key] = createHistoryStat();
+  var stat = store[key];
+  stat.bets += 1;
+  if(won) stat.wins += 1;
+  stat.profit += won ? (Number(odds || 0) > 1 ? (Number(odds || 0) - 1) : 0) : -1;
+}
+
+function refreshPredictionHistoryModel(){
+  var rows = getUnifiedRealHistoryRows(90).filter(function(r){
+    var mk = r && (r.market_key || inferMarketTypeFromLabel(r.market || ''));
+    return !!r && (r.status === 'win' || r.status === 'lose') && ['over15','over25','under35','btts'].indexOf(mk) !== -1;
+  });
+
+  var byMarket = {};
+  var byMarketLeague = {};
+  var byMarketOdds = {};
+  var byMarketConf = {};
+
+  rows.forEach(function(r){
+    var mk = r.market_key || inferMarketTypeFromLabel(r.market || '');
+    var won = r.status === 'win' || r.won === true;
+    var odds = Number(r.odds || 0);
+    bumpHistoryStat(byMarket, mk, won, odds);
+    bumpHistoryStat(byMarketLeague, mk + '|' + String(r.league || '—'), won, odds);
+    bumpHistoryStat(byMarketOdds, mk + '|' + historyOddsBucket(odds), won, odds);
+    bumpHistoryStat(byMarketConf, mk + '|' + historyConfBucket(Number(r.confidence || 0)), won, odds);
+  });
+
+  Object.keys(byMarket).forEach(function(key){ finalizeHistoryStat(byMarket[key]); });
+  Object.keys(byMarketLeague).forEach(function(key){ finalizeHistoryStat(byMarketLeague[key]); });
+  Object.keys(byMarketOdds).forEach(function(key){ finalizeHistoryStat(byMarketOdds[key]); });
+  Object.keys(byMarketConf).forEach(function(key){ finalizeHistoryStat(byMarketConf[key]); });
+
+  PREDICTION_HISTORY_MODEL = {
+    updatedAt: new Date().toISOString(),
+    lookbackDays: 90,
+    rows: rows.length,
+    byMarket: byMarket,
+    byMarketLeague: byMarketLeague,
+    byMarketOdds: byMarketOdds,
+    byMarketConf: byMarketConf
+  };
+  return PREDICTION_HISTORY_MODEL;
+}
+
+function getPredictionHistoryBoost(type, league, odds, confidence){
+  var model = PREDICTION_HISTORY_MODEL || refreshPredictionHistoryModel();
+  var reasons = [];
+  var scoreBoost = 0;
+
+  function apply(stat, weight, positiveLabel, negativeLabel, minBets){
+    if(!stat || Number(stat.bets || 0) < (minBets || 4)) return;
+    var impact = Number(stat.score || 0) * weight;
+    scoreBoost += impact;
+    if(Math.abs(impact) >= 0.8){
+      reasons.push(impact > 0 ? positiveLabel : negativeLabel);
+    }
+  }
+
+  apply(model.byMarket && model.byMarket[type], 1.0, 'istoric local bun pe piață', 'istoric local slab pe piață', 6);
+  apply(model.byMarketLeague && model.byMarketLeague[type + '|' + String(league || '—')], 0.55, 'istoric bun în liga asta', 'istoric slab în liga asta', 4);
+  apply(model.byMarketOdds && model.byMarketOdds[type + '|' + historyOddsBucket(odds)], 0.35, 'interval de cote favorabil', 'interval de cote slab', 4);
+  apply(model.byMarketConf && model.byMarketConf[type + '|' + historyConfBucket(confidence)], 0.25, 'confidence istoric bun', 'confidence istoric slab', 4);
+
+  scoreBoost = +clamp(scoreBoost, -10, 10).toFixed(2);
+  var adjBoost = +clamp(scoreBoost * 0.28, -4, 4).toFixed(2);
+  var label = scoreBoost >= 2 ? '+' + scoreBoost.toFixed(1) : (scoreBoost <= -2 ? scoreBoost.toFixed(1) : 'neutru');
+  var strength = scoreBoost >= 2 ? 'positive' : (scoreBoost <= -2 ? 'negative' : 'neutral');
+
+  return {
+    scoreBoost: scoreBoost,
+    adjBoost: adjBoost,
+    label: label,
+    strength: strength,
+    reasons: uniqueReasons(reasons).slice(0, 2),
+    samples: Number(model.rows || 0)
+  };
+}
+
 function scoreEventCandidate(ev, pick){
   if(!ev || !pick) return -1;
   var score = 0;
@@ -5738,7 +6115,7 @@ function findEventForStoredPick(pick){
   if(!pick) return null;
   var best = null;
   var bestScore = -Infinity;
-  (ALL_EVENTS || []).forEach(function(ev){
+  getKnownEventPool().forEach(function(ev){
     var sc = scoreEventCandidate(ev, pick);
     if(sc > bestScore){
       bestScore = sc;
@@ -5928,7 +6305,7 @@ function computeAutoTicketSettlement(ticket){
 
 function autoSyncTrackingStatuses(){
   if(!Array.isArray(TRACKING) || !TRACKING.length) return false;
-  if((!ALL_EVENTS || !ALL_EVENTS.length) && (!RECOMMENDATION_LOG || !RECOMMENDATION_LOG.length)) return false;
+  if((!ALL_EVENTS || !ALL_EVENTS.length) && (!ALL_FINISHED_EVENTS || !ALL_FINISHED_EVENTS.length) && !Object.keys(FINISHED_EVENT_ARCHIVE || {}).length && (!RECOMMENDATION_LOG || !RECOMMENDATION_LOG.length)) return false;
 
   var changed = false;
   TRACKING.forEach(function(ticket){
@@ -6260,7 +6637,7 @@ function getHistoryEventName(r){
   if(eventId){
     var match = (ALL_MATCHES || []).find(function(m){ return Number(m && m.eventId || 0) === eventId; });
     if(match && match.home && match.away) return match.home + ' vs ' + match.away;
-    var ev = (ALL_EVENTS || []).find(function(e){ return Number(e && e.id || 0) === eventId; });
+    var ev = getKnownEventPool().find(function(e){ return Number(e && e.id || 0) === eventId; });
     if(ev && ev.home_team && ev.away_team) return ev.home_team + ' vs ' + ev.away_team;
   }
   return '';
