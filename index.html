@@ -341,6 +341,14 @@ body{background:var(--bg);color:var(--txt);font-family:'Inter',sans-serif;min-he
 .card-reco-odd{font-size:11px;font-weight:800;color:var(--acc);font-family:var(--mono)}
 .card-reco-badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .card-reco-badge{padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);font-size:10px;font-weight:700;color:var(--txt)}
+.match-insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+.match-insight{padding:8px;border-radius:10px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
+.match-insight-k{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.match-insight-v{font-size:13px;font-weight:800;color:var(--txt);margin-top:4px;font-family:var(--mono)}
+.match-stat-legend{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px}
+.match-stat-item{padding:8px 10px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);font-size:10px;color:var(--muted);line-height:1.35}
+.match-stat-item strong{display:block;font-size:10px;color:var(--txt);margin-bottom:3px}
+@media(max-width:700px){.match-insight-grid,.match-stat-legend{grid-template-columns:repeat(2,1fr)}}
 .reason-list{gap:7px;margin-top:10px}
 .reason-pill{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.07)}
 
@@ -1520,29 +1528,44 @@ function sourceTypeFromBet(b){
 }
 function sourceLabelFromBet(b){
   var t = sourceTypeFromBet(b);
-  if(t === 'api') return 'ML/API';
-  if(t === 'mixed') return 'ML + heuristic';
-  if(t === 'heuristic') return 'heuristic';
+  if(t === 'api') return 'Model API';
+  if(t === 'mixed') return 'Model + reguli';
+  if(t === 'heuristic') return 'Model intern';
   return '—';
 }
 function sourceChipHtmlForBet(b){
   var t = sourceTypeFromBet(b);
-  if(t === 'api') return '<span class="source-chip source-chip-api">ML/API</span>';
-  if(t === 'mixed') return '<span class="source-chip source-chip-mixed">ML + heuristic</span>';
-  if(t === 'heuristic') return '<span class="source-chip source-chip-heur">heuristic</span>';
+  if(t === 'api') return '<span class="source-chip source-chip-api">Model API</span>';
+  if(t === 'mixed') return '<span class="source-chip source-chip-mixed">Model + reguli</span>';
+  if(t === 'heuristic') return '<span class="source-chip source-chip-heur">Model intern</span>';
   return '';
 }
 function sourceChipHtmlForAuditRow(r){
-  if(r && r.source_api && r.source_heuristic) return '<span class="source-chip source-chip-mixed">ML + heuristic</span>';
-  if(r && r.source_api) return '<span class="source-chip source-chip-api">ML/API</span>';
-  if(r && r.source_heuristic) return '<span class="source-chip source-chip-heur">heuristic</span>';
-  return '<span class="source-chip source-chip-heur">heuristic</span>';
+  if(r && r.source_api && r.source_heuristic) return '<span class="source-chip source-chip-mixed">Model + reguli</span>';
+  if(r && r.source_api) return '<span class="source-chip source-chip-api">Model API</span>';
+  if(r && r.source_heuristic) return '<span class="source-chip source-chip-heur">Model intern</span>';
+  return '<span class="source-chip source-chip-heur">Model intern</span>';
 }
 function ageBucketLabel(hours){
   var h = Number(hours || 0);
   if(!isFinite(h) || h <= 0) return '—';
   if(h < 24) return h.toFixed(1)+'h';
   return (h/24).toFixed(1)+' zile';
+}
+function getSignalFreshnessMeta(hours){
+  var h = Number(hours);
+  if(!isFinite(h) || h < 0) return {label:'vechime necunoscută', tone:'neutral', penalty:0, reject:false};
+  if(h <= 48) return {label:'semnal proaspăt', tone:'good', penalty:0, reject:false};
+  if(h <= 72) return {label:'semnal valid', tone:'neutral', penalty:2, reject:false};
+  if(h <= 96) return {label:'semnal vechi', tone:'warn', penalty:5, reject:false};
+  if(h <= 144) return {label:'semnal foarte vechi', tone:'warn', penalty:9, reject:false};
+  if(h <= 168) return {label:'semnal critic', tone:'bad', penalty:14, reject:false};
+  return {label:'semnal expirat', tone:'bad', penalty:20, reject:true};
+}
+function calcFairOdds(prob){
+  var p = Number(prob || 0);
+  if(!isFinite(p) || p <= 0) return null;
+  return +(100 / p).toFixed(2);
 }
 function toast(msg,type){
   var w=$('toast-wrap');
@@ -1910,12 +1933,15 @@ function switchTab(name){
 var BET_TYPES = [
   {key:'over15',   label:'Over 1.5G',    probField:'prob_over_15',   oddsField:'odds_over_15'},
   {key:'over25',   label:'Over 2.5G',    probField:'prob_over_25',   oddsField:'odds_over_25'},
+  {key:'under25',  label:'Under 2.5G',   probField:'prob_under_25',  oddsField:'odds_under_25', probGetter:function(raw){ return 100 - safePct(raw.prob_over_25); }},
   {key:'under35',  label:'Under 3.5G',   probField:'prob_under_35',  oddsField:'odds_under_35', probGetter:function(raw){ return 100 - safePct(raw.prob_over_35); }},
   {key:'btts',     label:'BTTS',         probField:'prob_btts_yes',  oddsField:'odds_btts_yes'},
+  {key:'homeWin',  label:'1',            probField:'prob_home_win',  oddsField:'odds_home'},
+  {key:'awayWin',  label:'2',            probField:'prob_away_win',  oddsField:'odds_away'},
 ];
 
 function getSupportedMarketTypes(){
-  return ['over15','over25','under35','btts'];
+  return ['over15','over25','under25','under35','btts','homeWin','awayWin'];
 }
 
 function isSaneOddsForType(type, odds){
@@ -2200,7 +2226,7 @@ function analyzeMatch(raw){
     u35: allBets.some(function(x){ return x.type === 'under35'; }),
     o35: false,
     btts: allBets.some(function(x){ return x.type === 'btts'; }),
-    winner: false,
+    winner: allBets.some(function(x){ return x.type === 'homeWin' || x.type === 'awayWin'; }),
     fav: !!raw.favorite_recommend
   };
   var homeApiId = e.home_team_obj ? e.home_team_obj.api_id : null;
@@ -2302,11 +2328,11 @@ function getBetByType(m, type){
 }
 
 function getAnalysisStateMeta(state){
-  if(state === 'ELIGIBLE') return {label:'✅ ELIGIBLE', color:'var(--grn)', bg:'rgba(34,197,94,.12)', border:'rgba(34,197,94,.25)'};
-  if(state === 'CONTRADICTED') return {label:'⚠️ CONTRADICTED', color:'var(--yel)', bg:'rgba(245,158,11,.12)', border:'rgba(245,158,11,.25)'};
-  if(state === 'FILTERED_OUT') return {label:'🧠 FILTERED', color:'var(--acc)', bg:'rgba(59,130,246,.12)', border:'rgba(59,130,246,.25)'};
-  if(state === 'NO_EDGE') return {label:'⛔ NO EDGE', color:'var(--red)', bg:'rgba(239,68,68,.12)', border:'rgba(239,68,68,.25)'};
-  return {label:'🛰️ NO ODDS', color:'var(--muted)', bg:'rgba(148,163,184,.12)', border:'rgba(148,163,184,.25)'};
+  if(state === 'ELIGIBLE') return {label:'VALIDAT', color:'var(--grn)', bg:'rgba(34,197,94,.12)', border:'rgba(34,197,94,.25)'};
+  if(state === 'CONTRADICTED') return {label:'CONTRAZIS DE DATE', color:'var(--yel)', bg:'rgba(245,158,11,.12)', border:'rgba(245,158,11,.25)'};
+  if(state === 'FILTERED_OUT') return {label:'WATCHLIST', color:'var(--acc)', bg:'rgba(59,130,246,.12)', border:'rgba(59,130,246,.25)'};
+  if(state === 'NO_EDGE') return {label:'FĂRĂ EDGE', color:'var(--red)', bg:'rgba(239,68,68,.12)', border:'rgba(239,68,68,.25)'};
+  return {label:'FĂRĂ COTĂ', color:'var(--muted)', bg:'rgba(148,163,184,.12)', border:'rgba(148,163,184,.25)'};
 }
 
 function syncRecommendationEngine(){
@@ -2675,22 +2701,20 @@ function buildRecommendationReasons(m, b){
   if(!m || !b) return [];
   var reasons = [];
   var t = b.type;
-  reasons.push('Șansă estimată ' + b.adjProb.toFixed(1) + '%');
+  reasons.push('Probabilitate ajustată ' + b.adjProb.toFixed(1) + '%');
   if(t === 'over15' || t === 'over25' || t === 'under25' || t === 'under35'){
     reasons.push('xG total ' + m.xgTotal.toFixed(2));
   } else if(t === 'btts'){
     reasons.push('xG H/A ' + m.xgHome.toFixed(2) + ' / ' + m.xgAway.toFixed(2));
   } else if(t === 'homeWin'){
-    reasons.push('xG gap +' + Math.max(0, m.xgHome - m.xgAway).toFixed(2));
+    reasons.push('Diferență xG +' + Math.max(0, m.xgHome - m.xgAway).toFixed(2));
   } else if(t === 'awayWin'){
-    reasons.push('xG gap +' + Math.max(0, m.xgAway - m.xgHome).toFixed(2));
+    reasons.push('Diferență xG +' + Math.max(0, m.xgAway - m.xgHome).toFixed(2));
   } else if(t === 'draw'){
-    reasons.push('echilibru xG ' + Math.abs(m.xgHome - m.xgAway).toFixed(2));
+    reasons.push('Echilibru xG ' + Math.abs(m.xgHome - m.xgAway).toFixed(2));
   }
   if(m.mostLikelyScore) reasons.push('Scor probabil ' + m.mostLikelyScore);
-  if(m.leagueTierLabel) reasons.push('Ligă ' + m.leagueTierLabel);
-  reasons.push('sursă ' + sourceLabelFromBet(b));
-
+  reasons.push('Sursă ' + sourceLabelFromBet(b));
   return uniqueReasons(reasons).slice(0, 4);
 }
 
@@ -3844,18 +3868,35 @@ function renderMatches(){
     var reasons = b ? buildRecommendationReasons(m, b).map(function(r){ return '<span class="reason-pill">'+r+'</span>'; }).join('') : '';
     var recLabel = b ? b.label : 'Fără recomandare activă';
     var recOdd = b && b.odds ? Number(b.odds).toFixed(2) : null;
-    var probBadge = b ? ('<span class="card-reco-badge">Șansă '+fmtPct(b.adjProb || 0)+'</span>') : '';
-    var valueBadge = b && b.value != null ? ('<span class="card-reco-badge">Value '+((b.value>=0?'+':'') + fmtPct((b.value||0)*100))+'</span>') : '';
+    var fairOdds = b ? calcFairOdds(b.adjProb || 0) : null;
+    var signalAge = hoursSince(m.createdAt);
+    var freshness = getSignalFreshnessMeta(signalAge);
+    var probBadge = b ? ('<span class="card-reco-badge">Prob. model '+fmtPct(b.adjProb || 0)+'</span>') : '';
+    var valueBadge = b && b.value != null ? ('<span class="card-reco-badge">EV '+((b.value>=0?'+':'') + fmtPct((b.value||0)*100))+'</span>') : '';
     var edgeBadge = b && b.edgePct != null ? ('<span class="card-reco-badge">Edge '+(b.edgePct >= 0 ? '+' : '')+fmtPct(b.edgePct)+'</span>') : '';
     var confBadge = b ? ('<span class="card-reco-badge">Confidence '+m.confidence.toFixed(0)+'%</span>') : '';
-    var tierBadge = b && m.leagueTierLabel ? ('<span class="card-reco-badge">'+m.leagueTierLabel+'</span>') : '';
+    var fairBadge = fairOdds ? ('<span class="card-reco-badge">Fair @ '+Number(fairOdds).toFixed(2)+'</span>') : '';
     var scoreBadge = m.mostLikelyScore ? ('<span class="mc-score-pill">scor probabil '+m.mostLikelyScore+'</span>') : '';
     var sourceBadge = b ? sourceChipHtmlForBet(b) : '';
-    var ageBadge = m.createdAt ? ('<span class="card-reco-badge">Vârstă '+ageBucketLabel(hoursSince(m.createdAt))+'</span>') : '';
+    var freshnessBadge = m.createdAt ? ('<span class="card-reco-badge">'+freshness.label+' • '+ageBucketLabel(signalAge)+'</span>') : '';
+    var insightHtml = b ? (
+      '<div class="match-insight-grid">'+
+        '<div class="match-insight"><div class="match-insight-k">Probabilitate</div><div class="match-insight-v">'+fmtPct(b.adjProb || 0)+'</div></div>'+
+        '<div class="match-insight"><div class="match-insight-k">Fair odds</div><div class="match-insight-v">'+(fairOdds ? ('@ '+Number(fairOdds).toFixed(2)) : '—')+'</div></div>'+
+        '<div class="match-insight"><div class="match-insight-k">Edge</div><div class="match-insight-v">'+(b.edgePct != null ? ((b.edgePct >= 0 ? '+' : '')+fmtPct(b.edgePct)) : '—')+'</div></div>'+
+        '<div class="match-insight"><div class="match-insight-k">Confidence</div><div class="match-insight-v">'+m.confidence.toFixed(0)+'%</div></div>'+
+      '</div>'
+    ) : '';
+    var legendHtml = (
+      '<div class="match-stat-legend">'+
+        '<div class="match-stat-item"><strong>Bază statistică</strong>xG gazde '+m.xgHome.toFixed(2)+' • xG oaspeți '+m.xgAway.toFixed(2)+' • xG total '+m.xgTotal.toFixed(2)+'</div>'+
+        '<div class="match-stat-item"><strong>Context semnal</strong>'+(m.mostLikelyScore ? ('Scor probabil '+m.mostLikelyScore+' • ') : '')+(m.leagueTierLabel || 'Ligă neutră')+' • '+sourceLabelFromBet(b)+'</div>'+
+      '</div>'
+    );
     return '<div class="match-card '+verdictClass+'">'+
       '<div class="mc-head">'+
-        '<div class="mc-league">'+leagueLogo+' 🌍 '+m.country+' • '+m.league+'</div>'+
-        '<div class="mc-time"><span>🕒 '+m.dateLabel+' • '+m.timeLabel+'</span>'+scoreBadge+'</div>'+
+        '<div class="mc-league">'+leagueLogo+' '+m.country+' • '+m.league+'</div>'+
+        '<div class="mc-time"><span>'+m.dateLabel+' • '+m.timeLabel+'</span>'+scoreBadge+'</div>'+
       '</div>'+
       '<div class="mc-teams mc-teams-premium">'+
         '<div class="mc-team"><div class="mc-team-row">'+hLogo+'<span>'+m.home+'</span></div></div>'+
@@ -3865,7 +3906,7 @@ function renderMatches(){
       '<div class="mc-midrow">'+
         '<div class="mc-verdict" style="background:'+state.bg+';border:1px solid '+state.border+';color:'+state.color+'">'+state.label+'</div>'+
         sourceBadge+
-        (b && b.value >= 0.05 ? '<div class="mc-value-chip">VALUE +' + fmtPct((b.value||0)*100) + '</div>' : '')+
+        (b && b.value >= 0.05 ? '<div class="mc-value-chip">EV ridicat</div>' : '')+
       '</div>'+
       '<div class="ticket-mini-grid ticket-mini-grid-premium">'+
         '<div class="ticket-mini"><div class="v">'+m.xgHome.toFixed(2)+'</div><div class="l">xG gazde</div></div>'+
@@ -3874,11 +3915,13 @@ function renderMatches(){
       '</div>'+
       '<div class="card-reco-main">'+
         '<div class="card-reco-head">'+
-          '<div class="card-reco-title">Pronostic recomandat</div>'+
+          '<div class="card-reco-title">Pronostic principal</div>'+
           (recOdd ? '<div class="card-reco-odd">@ '+recOdd+'</div>' : '')+
         '</div>'+
         '<div class="card-reco-pick">'+recLabel+'</div>'+
-        '<div class="card-reco-badges">'+probBadge+edgeBadge+valueBadge+confBadge+tierBadge+ageBadge+'</div>'+
+        '<div class="card-reco-badges">'+probBadge+fairBadge+edgeBadge+valueBadge+confBadge+freshnessBadge+'</div>'+
+        insightHtml+
+        legendHtml+
       '</div>'+
       (reasons ? '<div class="reason-list">'+reasons+'</div>' : '')+
     '</div>';
@@ -4054,9 +4097,15 @@ function buildMarketCandidate(m, type){
   if(!b) return null;
   if(isHardContradiction(m, type)) return null;
   if(b.value <= 0) return null;
+  if((m.confidence || 0) < 45) return null;
   if(Number(b.odds || 0) > 1.65) return null;
+  if(Number(b.edgePct || 0) < 0) return null;
   if(type === 'over25' && oddsInRanges(b.odds, [[1.26,1.45]]) && (b.value || 0) < 0.03) return null;
   if(m.leagueTier === 'avoid' && type !== 'under35') return null;
+
+  var ageHours = hoursSince(m.createdAt);
+  var freshness = getSignalFreshnessMeta(ageHours);
+  if(freshness.reject) return null;
 
   var fit = marketFitAnalysis(m, type);
   var reasons = uniqueReasons((fit && fit.reasons) || []);
@@ -4069,6 +4118,7 @@ function buildMarketCandidate(m, type){
   baseScore += (Math.max(0, b.value) * 100 * 0.18);
   baseScore += (fit && fit.score) || 0;
   baseScore += confBoost;
+  baseScore -= freshness.penalty;
   if(b.sourceApi) baseScore += 4;
   if(b.sourceHeuristic) baseScore += 2;
   if(b.odds >= 1.18 && b.odds <= 1.75) baseScore += 4;
@@ -4077,15 +4127,19 @@ function buildMarketCandidate(m, type){
   if(b.odds > 2.20) baseScore -= 8;
 
   var risk = 'MEDIU';
-  if(b.adjProb >= 76 && edgePct >= 2 && (m.confidence || 0) >= 56) risk = 'LOW';
-  else if(b.adjProb < 58 || b.odds > 2.10 || edgePct < 1) risk = 'HIGH';
+  if(b.adjProb >= 76 && edgePct >= 2 && (m.confidence || 0) >= 56 && freshness.tone !== 'bad') risk = 'LOW';
+  else if(b.adjProb < 58 || b.odds > 2.10 || edgePct < 1 || freshness.tone === 'bad') risk = 'HIGH';
 
   return Object.assign({}, m, {
     bestBet: Object.assign({}, b),
     ticketScore: Math.round(baseScore),
     ticketRisk: risk,
+    signalAgeHours: ageHours,
+    freshnessLabel: freshness.label,
+    freshnessTone: freshness.tone,
+    fairOdds: calcFairOdds(b.adjProb),
     why: reasons.slice(0, 3).join(' • '),
-    proEligible: (m.leagueTier !== 'avoid') && (b.adjProb >= 72) && ((b.edgePct || 0) >= 1.5) && ((b.value || 0) >= 0.01)
+    proEligible: (m.leagueTier !== 'avoid') && (b.adjProb >= 72) && ((b.edgePct || 0) >= 1.5) && ((b.value || 0) >= 0.01) && freshness.tone !== 'bad'
   });
 }
 
@@ -4241,14 +4295,14 @@ function generateConservativeTicket(){
     });
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= 3 && chosen.totalOdds >= 1.85){
-      finalizeTicket('simple', '🧊 Bilet conservator', chosen.picks, chosen.totalOdds);
+      finalizeTicket('simple', 'Bilet Conservator', chosen.picks, chosen.totalOdds);
       if(BILETE) BILETE.riskLabel = 'Scăzut-mediu';
       renderBilete();
       return;
     }
   }
 
-  finalizeTicket('simple', '🧊 Bilet conservator', [], 1);
+  finalizeTicket('simple', 'Bilet Conservator', [], 1);
 }
 
 function generateTicket(){
@@ -4272,12 +4326,12 @@ function generateTicket(){
     var pack = collectCandidates(baseProfile.allowedTypes, baseProfile, relax);
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= pack.profile.minPicks && chosen.totalOdds >= pack.profile.targetMinOdds){
-      finalizeTicket('simple', '🛡️ Bilet Smart EV', chosen.picks, chosen.totalOdds);
+      finalizeTicket('simple', 'Bilet Smart EV', chosen.picks, chosen.totalOdds);
       return;
     }
   }
 
-  finalizeTicket('simple', '🛡️ Bilet Smart EV', [], 1);
+  finalizeTicket('simple', 'Bilet Smart EV', [], 1);
 }
 
 
@@ -4699,14 +4753,14 @@ function generateControlledComboTicket(){
     var pack = collectCandidates(baseProfile.allowedTypes, baseProfile, relax);
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= 3 && chosen.totalOdds >= 2.10){
-      finalizeTicket('controlled_combo', '⚖️ Combo controlat', chosen.picks, chosen.totalOdds);
+      finalizeTicket('controlled_combo', 'Combo Controlat', chosen.picks, chosen.totalOdds);
       if(BILETE) BILETE.riskLabel = 'Mediu';
       renderBilete();
       return;
     }
   }
 
-  finalizeTicket('controlled_combo', '⚖️ Combo controlat', [], 1);
+  finalizeTicket('controlled_combo', 'Combo Controlat', [], 1);
 }
 
 function parseLocaleNumber(value, fallback){
@@ -4804,7 +4858,7 @@ function generateCustomTicket(){
       };
       var hv = selectDiversifiedPicks(pack.list, hvProfile);
       if(hv.picks.length === currentPicks){
-        finalizeTicket('custom_combo', '🎛️ Bilet personalizat', hv.picks, hv.totalOdds);
+        finalizeTicket('custom_combo', 'Bilet Personalizat', hv.picks, hv.totalOdds);
         setCustomTicketMeta(opts.stake, opts.risk);
         renderBilete();
         toast('Bilet volum mare generat!', 'ok');
@@ -4815,7 +4869,7 @@ function generateCustomTicket(){
     if(opts.format === 'single'){
       var single = chooseCustomSingle(pack.list, currentTargetOdds);
       if(single){
-        finalizeTicket('custom_single', '🎛️ Bilet personalizat', [single], single.bestBet.odds);
+        finalizeTicket('custom_single', 'Bilet Personalizat', [single], single.bestBet.odds);
         setCustomTicketMeta(opts.stake, opts.risk);
         renderBilete();
         toast('Bilet personalizat generat!', 'ok');
@@ -4838,7 +4892,7 @@ function generateCustomTicket(){
     var chosen = findBestCustomCombo(pack.list, opts, profile, currentTargetOdds, relax);
 
     if(chosen && chosen.picks.length === currentPicks){
-      finalizeTicket('custom_combo', '🎛️ Bilet personalizat', chosen.picks, chosen.totalOdds);
+      finalizeTicket('custom_combo', 'Bilet Personalizat', chosen.picks, chosen.totalOdds);
       setCustomTicketMeta(opts.stake, opts.risk);
       renderBilete();
       toast('Bilet personalizat generat!', 'ok');
@@ -4856,7 +4910,7 @@ function generateCustomTicket(){
     if(volumeList.length >= currentPicks){
       var picks = volumeList.slice(0, currentPicks);
       var totalOdds = picks.reduce(function(acc, item){ return acc * item.bestBet.odds; }, 1);
-      finalizeTicket('custom_combo', '🎛️ Bilet personalizat (volum mare)', picks, totalOdds);
+      finalizeTicket('custom_combo', 'Bilet Personalizat (volum mare)', picks, totalOdds);
       setCustomTicketMeta(opts.stake, opts.risk);
       renderBilete();
       toast('Fallback volum mare activat', 'warn');
@@ -4869,7 +4923,7 @@ function generateCustomTicket(){
     if(opts.format === 'single'){
       var fallbackSingle = chooseCustomSingle(fallbackList, currentTargetOdds);
       if(fallbackSingle){
-        finalizeTicket('custom_single', '🎛️ Bilet personalizat (fallback AI)', [fallbackSingle], fallbackSingle.bestBet.odds);
+        finalizeTicket('custom_single', 'Bilet Personalizat (fallback AI)', [fallbackSingle], fallbackSingle.bestBet.odds);
         setCustomTicketMeta(opts.stake, opts.risk);
         renderBilete();
         toast('Generatorul a folosit fallback inteligent', 'warn');
@@ -4887,7 +4941,7 @@ function generateCustomTicket(){
       };
       var fallbackCombo = findBestCustomCombo(fallbackList, opts, fallbackProfile, Math.max(1.20, currentTargetOdds * 0.82), 2);
       if(fallbackCombo && fallbackCombo.picks.length){
-        finalizeTicket('custom_combo', '🎛️ Bilet personalizat (fallback AI)', fallbackCombo.picks, fallbackCombo.totalOdds);
+        finalizeTicket('custom_combo', 'Bilet Personalizat (fallback AI)', fallbackCombo.picks, fallbackCombo.totalOdds);
         setCustomTicketMeta(opts.stake, opts.risk);
         renderBilete();
         toast('Generatorul a relaxat automat filtrele', 'warn');
@@ -4919,12 +4973,12 @@ function generateOver15Ticket(){
     var pack = collectCandidates(['over15'], baseProfile, relax);
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= pack.profile.minPicks && chosen.totalOdds >= pack.profile.targetMinOdds){
-      finalizeTicket('over15', '🔥 Bilet 1.5G EV+', chosen.picks, chosen.totalOdds);
+      finalizeTicket('over15', 'Bilet Over 1.5 EV+', chosen.picks, chosen.totalOdds);
       return;
     }
   }
 
-  finalizeTicket('over15', '🔥 Bilet 1.5G EV+', [], 1);
+  finalizeTicket('over15', 'Bilet Over 1.5 EV+', [], 1);
 }
 
 function generateOver35Ticket(){
@@ -4952,12 +5006,12 @@ function generateMixTicket(){
     var pack = collectCandidates(baseProfile.allowedTypes, baseProfile, relax);
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= pack.profile.minPicks && chosen.totalOdds >= pack.profile.targetMinOdds){
-      finalizeTicket('mix_combo', '🎯 Mix 70% / ~5.0', chosen.picks, chosen.totalOdds);
+      finalizeTicket('mix_combo', 'Mix Selectiv 70%', chosen.picks, chosen.totalOdds);
       return;
     }
   }
 
-  finalizeTicket('mix_combo', '🎯 Mix 70% / ~5.0', [], 1);
+  finalizeTicket('mix_combo', 'Mix Selectiv 70%', [], 1);
 }
 
 function generateBestEventTicket(){
@@ -5008,13 +5062,13 @@ function generateBestEventTicket(){
       break;
     }
     var totalOdds = picks.reduce(function(acc, item){ return acc * item.bestBet.odds; }, 1);
-    finalizeTicket('best_single', '🎯 Biletul zilei', picks, totalOdds);
+    finalizeTicket('best_single', 'Single Premium', picks, totalOdds);
     if(BILETE) BILETE.riskLabel = picks.length === 1 ? 'Scăzut' : 'Scăzut-mediu';
     renderBilete();
     return;
   }
 
-  finalizeTicket('best_single', '🎯 Biletul zilei', [], 1);
+  finalizeTicket('best_single', 'Single Premium', [], 1);
 }
 
 function generateProfitFocusTicket(){
@@ -5155,11 +5209,11 @@ function generateProfitFocusTicket(){
   if(!candidates.length) candidates = collect([todayKey, tomorrowKey], 70, 0.005, 45, 1.18, 1.85);
 
   if(candidates.length){
-    finalizeTicket('profit_single', '📈 Profit Focus (Single)', [candidates[0]], candidates[0].bestBet.odds);
+    finalizeTicket('profit_single', 'Profit Focus Single', [candidates[0]], candidates[0].bestBet.odds);
     return;
   }
 
-  finalizeTicket('profit_single', '📈 Profit Focus (Single)', [], 1);
+  finalizeTicket('profit_single', 'Profit Focus Single', [], 1);
 }
 
 function generateBigWinTicket(){
@@ -5183,12 +5237,12 @@ function generateBigWinTicket(){
     var pack = collectCandidates(baseProfile.allowedTypes, baseProfile, relax);
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= pack.profile.minPicks && chosen.totalOdds >= pack.profile.targetMinOdds){
-      finalizeTicket('big_win', '🚀 Mega Big Win', chosen.picks, chosen.totalOdds);
+      finalizeTicket('big_win', 'Combo Extins', chosen.picks, chosen.totalOdds);
       return;
     }
   }
 
-  finalizeTicket('big_win', '🚀 Mega Big Win', [], 1);
+  finalizeTicket('big_win', 'Combo Extins', [], 1);
 }
 
 
@@ -5229,10 +5283,10 @@ function buildSmartTicketPreview(){
     var pack = collectCandidates(baseProfile.allowedTypes, baseProfile, relax);
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= pack.profile.minPicks && chosen.totalOdds >= pack.profile.targetMinOdds){
-      return makeTicketPreview('simple', '🛡️ Bilet Smart EV', chosen.picks, chosen.totalOdds, 'Scăzut-mediu', '2-4 selecții echilibrate, fără să forțeze cota de dragul show-ului.');
+      return makeTicketPreview('simple', 'Bilet Smart EV', chosen.picks, chosen.totalOdds, 'Scăzut-mediu', '2-4 selecții echilibrate, fără să forțeze cota de dragul show-ului.');
     }
   }
-  return makeTicketPreview('simple', '🛡️ Bilet Smart EV', [], 1, '—', 'Nu are încă material suficient de curat.');
+  return makeTicketPreview('simple', 'Bilet Smart EV', [], 1, '—', 'Nu are încă material suficient de curat.');
 }
 
 function buildConservativeTicketPreview(){
@@ -5260,10 +5314,10 @@ function buildConservativeTicketPreview(){
     });
     var chosen = selectDiversifiedPicks(pack.list, pack.profile);
     if(chosen.picks.length >= 3 && chosen.totalOdds >= 1.85){
-      return makeTicketPreview('simple', '🧊 Bilet conservator', chosen.picks, chosen.totalOdds, 'Scăzut-mediu', 'Pentru zilele în care vrei structură curată și piețe robuste.');
+      return makeTicketPreview('simple', 'Bilet Conservator', chosen.picks, chosen.totalOdds, 'Scăzut-mediu', 'Pentru zilele în care vrei structură curată și piețe robuste.');
     }
   }
-  return makeTicketPreview('simple', '🧊 Bilet conservator', [], 1, '—', 'Momentan piața nu oferă 3-5 selecții suficient de curate.');
+  return makeTicketPreview('simple', 'Bilet Conservator', [], 1, '—', 'Momentan piața nu oferă 3-5 selecții suficient de curate.');
 }
 
 function buildBestEventTicketPreview(){
@@ -5309,9 +5363,9 @@ function buildBestEventTicketPreview(){
       picks.push(c);
       break;
     }
-    return makeTicketPreview('best_single', '🎯 Biletul zilei', picks, picks.reduce(function(acc, item){ return acc * item.bestBet.odds; }, 1), picks.length === 1 ? 'Scăzut' : 'Scăzut-mediu', 'Primul buton pe care merită să-l apeși când vrei selecția cea mai clară.');
+    return makeTicketPreview('best_single', 'Single Premium', picks, picks.reduce(function(acc, item){ return acc * item.bestBet.odds; }, 1), picks.length === 1 ? 'Scăzut' : 'Scăzut-mediu', 'Primul buton pe care merită să-l apeși când vrei selecția cea mai clară.');
   }
-  return makeTicketPreview('best_single', '🎯 Biletul zilei', [], 1, '—', 'Nu există încă o alegere destul de clară pentru formatul de azi.');
+  return makeTicketPreview('best_single', 'Single Premium', [], 1, '—', 'Nu există încă o alegere destul de clară pentru formatul de azi.');
 }
 
 function buildProfitFocusTicketPreview(){
@@ -5398,9 +5452,9 @@ function buildProfitFocusTicketPreview(){
   if(!candidates.length) candidates = collect([todayKey], 70, 0.005, 45, 1.18, 1.85);
   if(!candidates.length) candidates = collect([todayKey, tomorrowKey], 70, 0.005, 45, 1.18, 1.85);
   if(candidates.length){
-    return makeTicketPreview('profit_single', '📈 Profit Focus (Single)', [candidates[0]], candidates[0].bestBet.odds, 'Scăzut+', 'Single EV+ pentru cine preferă lovituri scurte, nu bilete încărcate.');
+    return makeTicketPreview('profit_single', 'Profit Focus Single', [candidates[0]], candidates[0].bestBet.odds, 'Scăzut+', 'Single EV+ pentru cine preferă lovituri scurte, nu bilete încărcate.');
   }
-  return makeTicketPreview('profit_single', '📈 Profit Focus (Single)', [], 1, '—', 'Momentan nu are un single suficient de curat.');
+  return makeTicketPreview('profit_single', 'Profit Focus Single', [], 1, '—', 'Momentan nu are un single suficient de curat.');
 }
 
 function rankPresetTicket(ticket){
